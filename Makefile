@@ -176,7 +176,8 @@ HEXL_ZIP = $(HEXL_DIR).zip
 
 $(HEXL_DIR): $(HEXL_ZIP)
 	cd $(THIRD_PARTY_DIR) && unzip $(HEXL_SUBDIR).zip
-	cd $(HEXL_DIR) && cmake -S . -B build -DHEXL_BENCHMARK=OFF -DHEXL_TESTING=OFF
+	cd $(HEXL_DIR) && cmake -S . -B build -DHEXL_BENCHMARK=OFF -DHEXL_TESTING=OFF \
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_LIBDIR=lib64
 	cd $(HEXL_DIR) && cmake --build build
 #	cd $(HEXL_DIR) && cmake -S . -B build -DHEXL_SHARED_LIB=ON
 #	cd $(HEXL_DIR) && cmake --build build
