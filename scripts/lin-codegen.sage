@@ -61,7 +61,7 @@ else:
     wlinf = max(1, max(wl2))
 
 k = deg/d
-P = (mod-1)/2
+P = floor(mod/2)  # the centred bound; (mod-1)/2 is not an integer for an even mod
 # t = As+e
 S = wlinf  # bound on linf(s)
 E = 0   # bound on linf(e), n/a here
