@@ -2090,28 +2090,39 @@ __schwartz_zippel_accumulate (spolymat_ptr R2i, spolyvec_ptr r1i, poly_ptr r0i,
 
   DEBUG_PRINTF (DEBUG_PRINT_FUNCTION_ENTRY, "%s begin", __func__);
 
+  /* equations without a quadratic part (such as beta3's d - 1,
+   * accumulated one at a time) leave R2i unchanged: skip the R2 block, and
+   * its three n x n sparse matrices, when no equation has one. */
+  int has_r2 = 0;
+
+  for (j = 0; j < M; j++)
+    has_r2 |= (Rprime2i[j] != NULL);
+
   spolyvec_alloc (u0, Rq, n, n);
   spolyvec_alloc (u1, Rq, n, n);
   spolyvec_alloc (u2, Rq, n, n);
-  spolymat_alloc (t0, Rq, n, n, (n * n - n) / 2 + n);
-  spolymat_alloc (t1, Rq, n, n, (n * n - n) / 2 + n);
-  spolymat_alloc (t2, Rq, n, n, (n * n - n) / 2 + n);
-
-  /* R2i */
-
-  spolymat_set (t0, R2i);
-  for (j = 0; j < M; j++)
+  if (has_r2)
     {
-      if (Rprime2i[j] == NULL)
-        continue;
+      spolymat_alloc (t0, Rq, n, n, (n * n - n) / 2 + n);
+      spolymat_alloc (t1, Rq, n, n, (n * n - n) / 2 + n);
+      spolymat_alloc (t2, Rq, n, n, (n * n - n) / 2 + n);
 
-      spolymat_fromcrt (Rprime2i[j]);
+      /* R2i */
 
-      spolymat_scale (t1, intvec_get_elem (v, j), Rprime2i[j]);
-      spolymat_add (t2, t0, t1, 0);
-      spolymat_set (t0, t2);
+      spolymat_set (t0, R2i);
+      for (j = 0; j < M; j++)
+        {
+          if (Rprime2i[j] == NULL)
+            continue;
+
+          spolymat_fromcrt (Rprime2i[j]);
+
+          spolymat_scale (t1, intvec_get_elem (v, j), Rprime2i[j]);
+          spolymat_add (t2, t0, t1, 0);
+          spolymat_set (t0, t2);
+        }
+      spolymat_mod (R2i, t0);
     }
-  spolymat_mod (R2i, t0);
 
   /* r1i */
 
@@ -2145,9 +2156,12 @@ __schwartz_zippel_accumulate (spolymat_ptr R2i, spolyvec_ptr r1i, poly_ptr r0i,
   spolyvec_free (u0);
   spolyvec_free (u1);
   spolyvec_free (u2);
-  spolymat_free (t0);
-  spolymat_free (t1);
-  spolymat_free (t2);
+  if (has_r2)
+    {
+      spolymat_free (t0);
+      spolymat_free (t1);
+      spolymat_free (t2);
+    }
 
   DEBUG_PRINTF (DEBUG_PRINT_FUNCTION_RETURN, "%s end", __func__);
 }
@@ -2565,6 +2579,154 @@ _diag (unsigned int *row, unsigned int *col, unsigned int r, unsigned int c)
     }
 }
 
+/* the norm and binary statements are mostly selection
+ * matrices (Ps, Es), so most of the m1 x m1 column pairs of the quadratic
+ * forms o(P)^T P are of zero columns. Each column's nonzero rows are recorded
+ * once, and a dot product is taken only over the rows two columns share; a
+ * pair that shares none adds no element. The zero pattern of o(P) is that of
+ * P. */
+typedef struct
+{
+  unsigned int *rows;
+  unsigned int *start; /* rows of column k: rows[start[k] .. start[k+1]-1] */
+} _nzcols_t;
+
+static int
+_sparse_poly_is_zero (poly_ptr p)
+{
+  unsigned int i, k;
+
+  if (p->crt)
+    {
+      /* zero iff every residue is (the NTT is a bijection), and testing in
+       * place avoids converting the caller's matrix */
+      for (k = 0; k < p->ring->nmoduli; k++)
+        for (i = 0; i < p->ring->d; i++)
+          if (*_get_crtcoeff (p->crtrep, k, i, p->ring->d) != 0)
+            return 0;
+      return 1;
+    }
+  for (i = 0; i < p->ring->d; i++)
+    if (int_eqzero (poly_get_coeff (p, i)) != 1)
+      return 0;
+  return 1;
+}
+
+static void
+_sparse_nzcols_init (_nzcols_t *nz, polymat_ptr M)
+{
+  const unsigned int nr = polymat_get_nrows (M), nc = polymat_get_ncols (M);
+  unsigned int i, j, n = 0;
+
+  nz->rows = _alloc (sizeof (unsigned int) * (nr * nc + 1));
+  nz->start = _alloc (sizeof (unsigned int) * (nc + 1));
+  for (j = 0; j < nc; j++)
+    {
+      nz->start[j] = n;
+      for (i = 0; i < nr; i++)
+        if (!_sparse_poly_is_zero (polymat_get_elem (M, i, j)))
+          nz->rows[n++] = i;
+    }
+  nz->start[nc] = n;
+}
+
+static void
+_sparse_nzcols_clear (_nzcols_t *nz, polymat_ptr M)
+{
+  _free (nz->rows, sizeof (unsigned int)
+                       * (polymat_get_nrows (M) * polymat_get_ncols (M) + 1));
+  _free (nz->start, sizeof (unsigned int) * (polymat_get_ncols (M) + 1));
+}
+
+/* Whether columns k of A and j of B share a nonzero row. */
+static int
+_sparse_overlap (const _nzcols_t *na, unsigned int k, const _nzcols_t *nb,
+                 unsigned int j)
+{
+  unsigned int x = na->start[k], y = nb->start[j];
+
+  while (x < na->start[k + 1] && y < nb->start[j + 1])
+    {
+      if (na->rows[x] == nb->rows[y])
+        return 1;
+      if (na->rows[x] < nb->rows[y])
+        x++;
+      else
+        y++;
+    }
+  return 0;
+}
+
+/* r = <column k of A, column j of B>, over the rows both have nonzero, in the
+ * representation polyvec_dot leaves (CRT). */
+static void
+_sparse_coldot (poly_t r, polymat_ptr A, const _nzcols_t *na, unsigned int k,
+                polymat_ptr B, const _nzcols_t *nb, unsigned int j)
+{
+  unsigned int x = na->start[k], y = nb->start[j];
+  poly_t prod;
+
+  poly_alloc (prod, r->ring);
+  if (r->crtrep == NULL)
+    {
+      ASSERT_ERR (r->crt == 0);
+      r->crtrep = _alloc (_sizeof_crtrep_data (r->ring));
+    }
+  r->crt = 1;
+  memset (r->crtrep, 0, _sizeof_crtrep_data (r->ring));
+  while (x < na->start[k + 1] && y < nb->start[j + 1])
+    {
+      if (na->rows[x] == nb->rows[y])
+        {
+          poly_mul (prod, polymat_get_elem (A, na->rows[x], k),
+                    polymat_get_elem (B, nb->rows[y], j));
+          poly_add (r, r, prod, 1);
+          x++;
+          y++;
+        }
+      else if (na->rows[x] < nb->rows[y])
+        x++;
+      else
+        y++;
+    }
+  poly_free (prod);
+}
+
+/* r = a^T M over the nonzero rows of each column of M. */
+static void
+_sparse_vecmat (polyvec_t r, polyvec_t a, polymat_ptr M, const _nzcols_t *nz)
+{
+  const unsigned int nc = polymat_get_ncols (M);
+  unsigned int c, x;
+  poly_ptr rc;
+  poly_t prod;
+
+  poly_alloc (prod, polyvec_get_ring (r));
+  for (c = 0; c < nc; c++)
+    {
+      rc = polyvec_get_elem (r, c);
+      if (nz->start[c] == nz->start[c + 1])
+        {
+          poly_set_zero (rc);
+          continue;
+        }
+      if (rc->crtrep == NULL)
+        {
+          ASSERT_ERR (rc->crt == 0);
+          rc->crtrep = _alloc (_sizeof_crtrep_data (rc->ring));
+        }
+      rc->crt = 1;
+      memset (rc->crtrep, 0, _sizeof_crtrep_data (rc->ring));
+      for (x = nz->start[c]; x < nz->start[c + 1]; x++)
+        {
+          poly_mul (prod, polyvec_get_elem (a, nz->rows[x]),
+                    polymat_get_elem (M, nz->rows[x], c));
+          poly_add (rc, rc, prod, 1);
+        }
+    }
+  poly_free (prod);
+}
+
 static void
 __schwartz_zippel_accumulate_bin (spolymat_ptr R2i[], spolyvec_ptr r1i[],
                                   poly_ptr r0i[], spolymat_ptr R2i2[],
@@ -2650,6 +2812,10 @@ __schwartz_zippel_accumulate_bin (spolymat_ptr R2i[], spolyvec_ptr r1i[],
   spolymat_set_empty (R2t);
   spolyvec_set_empty (r1t);
 
+  _nzcols_t nzPs;
+
+  if (Ps != NULL)
+    _sparse_nzcols_init (&nzPs, Ps);
   if (Ps != NULL)
     {
       for (k = 0; k < m1; k++)
@@ -2658,14 +2824,18 @@ __schwartz_zippel_accumulate_bin (spolymat_ptr R2i[], spolyvec_ptr r1i[],
           // XXXpolymat_get_col (subv, Ps, k);
           // XXXpolyvec_auto (tmp_polyvec2, subv);
 
-          /* o(s1)^T*o(Ps)^T*Ps*s1 */
+          /* o(s1)^T*o(Ps)^T*Ps*s1 (sparse) */
+          if (nzPs.start[k] == nzPs.start[k + 1])
+            goto p1_bin_skip_k;
           for (j = 0; j < m1; j++)
             {
-              polymat_get_col (subv, Ps, j);
+              if (!_sparse_overlap (&nzPs, k, &nzPs, j))
+                continue;
               _diag (&row, &col, 2 * k + 1, 2 * j);
               poly = spolymat_insert_elem (R2t, row, col);
-              polyvec_dot (poly, subv2, subv);
+              _sparse_coldot (poly, oPs, &nzPs, k, Ps, &nzPs, j);
             }
+        p1_bin_skip_k:;
 
           /* o(s1)^T*o(Ps)^T*Pm*m */
           if (Pm != NULL)
@@ -2769,6 +2939,8 @@ __schwartz_zippel_accumulate_bin (spolymat_ptr R2i[], spolyvec_ptr r1i[],
   __schwartz_zippel_accumulate2 (R2i, r1i, r0i, R2i2, r1i2, r0i2, R2tptr,
                                  r1tptr, r0tptr, 1, seed, dom,
                                  params->quad_eval);
+  if (Ps != NULL)
+    _sparse_nzcols_clear (&nzPs, Ps);
 }
 
 #define MAX(x, y) ((x) >= (y) ? (x) : (y))
@@ -2868,6 +3040,10 @@ __schwartz_zippel_accumulate_l2 (spolymat_ptr R2i[], spolyvec_ptr r1i[],
       spolyvec_set_empty (r1t);
       r1t->sorted = 0;
 
+      _nzcols_t nzEs;
+
+      if (Es != NULL && Es[i] != NULL)
+        _sparse_nzcols_init (&nzEs, Es[i]);
       if (Es != NULL && Es[i] != NULL)
         {
           for (k = 0; k < m1; k++)
@@ -2876,13 +3052,14 @@ __schwartz_zippel_accumulate_l2 (spolymat_ptr R2i[], spolyvec_ptr r1i[],
               polymat_get_col (subv2, oEs[i], k);
               // XXXpolyvec_auto (subv2, subv);
 
-              /* o(s1)^T*o(Es)^T*Es*s1 */
-              for (j = 0; j < m1; j++)
+              /* o(s1)^T*o(Es)^T*Es*s1 (sparse) */
+              for (j = 0; nzEs.start[k] < nzEs.start[k + 1] && j < m1; j++)
                 {
-                  polymat_get_col (subv, Es[i], j);
+                  if (!_sparse_overlap (&nzEs, k, &nzEs, j))
+                    continue;
                   _diag (&row, &col, 2 * k + 1, 2 * j);
                   poly = spolymat_insert_elem (R2t, row, col);
-                  polyvec_dot (poly, subv2, subv);
+                  _sparse_coldot (poly, oEs[i], &nzEs, k, Es[i], &nzEs, j);
                 }
 
               /* o(s1)^T*o(Es)^T*Em*m */
@@ -2997,6 +3174,8 @@ __schwartz_zippel_accumulate_l2 (spolymat_ptr R2i[], spolyvec_ptr r1i[],
       __schwartz_zippel_accumulate2 (R2i, r1i, r0i, R2i2, r1i2, r0i2, R2tptr,
                                      r1tptr, r0tptr, 1, seed, dom,
                                      params->quad_eval);
+      if (Es != NULL && Es[i] != NULL)
+        _sparse_nzcols_clear (&nzEs, Es[i]);
     }
 
   polyvec_free (tmp_polyvec);
@@ -3365,6 +3544,14 @@ __schwartz_zippel_accumulate_z3 (
   INTVEC_T (vRf, lambda, 2 * Rq->q->nlimbs);
   intmat_urandom (V, q, log2q, seed, dom);
 
+  /* nonzero patterns of Ps and Es (those of oPs, oEs) */
+  _nzcols_t nzPs3, nzEs3[Z];
+  if (Ps != NULL)
+    _sparse_nzcols_init (&nzPs3, Ps);
+  for (i = 0; i < Z; i++)
+    if (Es != NULL && Es[i] != NULL)
+      _sparse_nzcols_init (&nzEs3[i], Es[i]);
+
   // printf ("V:\n");
   // intmat_dump (V);
 
@@ -3411,6 +3598,32 @@ __schwartz_zippel_accumulate_z3 (
 
   intmat_set_zero (vR);
 
+  /* vR = V R accumulated in 64-bit words. Each entry is a
+   * sum of at most 256 terms +-V[k][i] with 0 <= V[k][i] < q, so it fits
+   * whenever 256 q < 2^63, i.e. q < 2^55; larger moduli keep the generic
+   * multi-limb accumulation. */
+  if (int_get_nlimbs (q) == 1 && log2q <= 55)
+    {
+      int64_t *vR64 = _alloc (sizeof (int64_t) * lambda * nex * d);
+      int64_t c64;
+
+      memset (vR64, 0, sizeof (int64_t) * lambda * nex * d);
+      for (i = 0; i < 256; i++)
+        {
+          _expand_R_i (Ri, nex * d, i, seed);
+          for (k = 0; k < lambda; k++)
+            {
+              c64 = int_get_i64 (intmat_get_elem (V, k, i));
+              for (j = 0; j < nex * d; j++)
+                vR64[k * nex * d + j] += (int64_t)Ri[j] * c64;
+            }
+        }
+      for (k = 0; k < lambda; k++)
+        for (j = 0; j < nex * d; j++)
+          int_set_i64 (intmat_get_elem (vR, k, j), vR64[k * nex * d + j]);
+      _free (vR64, sizeof (int64_t) * lambda * nex * d);
+    }
+  else
   for (i = 0; i < 256; i++)
     {
       _expand_R_i (Ri, nex * d, i, seed);
@@ -3533,7 +3746,7 @@ __schwartz_zippel_accumulate_z3 (
           polyvec_get_subvec (subv1, subv1, 0, nbin, 1);
           polymat_get_row (subv2, vRPs, k); // correct
 
-          polyvec_mul2 (subv2, subv1, oPs);
+          _sparse_vecmat (subv2, subv1, oPs, &nzPs3);
         }
     }
 
@@ -3567,7 +3780,7 @@ __schwartz_zippel_accumulate_z3 (
               polymat_get_row (subv2, vREsi[i], k);
 
               // XXXpolyvec_mul2 (subv2, subv1, subm);
-              polyvec_mul2 (subv2, subv1, oEs[i]);
+              _sparse_vecmat (subv2, subv1, oEs[i], &nzEs3[i]);
             }
         }
       off += ni[i];
@@ -3783,4 +3996,10 @@ __schwartz_zippel_accumulate_z3 (
           _free (vi_[i], sizeof (intvec_t));
         }
     }
+  /* the nonzero patterns of Ps and Es */
+  if (Ps != NULL)
+    _sparse_nzcols_clear (&nzPs3, Ps);
+  for (i = 0; i < Z; i++)
+    if (Es != NULL && Es[i] != NULL)
+      _sparse_nzcols_clear (&nzEs3[i], Es[i]);
 }
