@@ -2791,7 +2791,12 @@ int_mod_XXX (const int_t a, crtcoeff_t m)
     {
       d1 = r;
       d2 = a->limbs[k];
-      r = (((crtcoeff_dbl_t)d1 << CRTCOEFF_NBITS) + d2) % m; // XXX
+      /* P3: with a zero high word the 128-bit remainder (a call
+       * to __modti3) is a 64-bit one; at a single-limb q that is every call. */
+      if (d1 == 0)
+        r = d2 % (limb_t)m;
+      else
+        r = (((crtcoeff_dbl_t)d1 << CRTCOEFF_NBITS) + d2) % m; // XXX
     }
 
   return a->neg ? -r : r;
@@ -2810,7 +2815,11 @@ int_mod_XXX_hexl (const int_t a, crtcoeff_t m)
     {
       d1 = r;
       d2 = a->limbs[k];
-      r = (((crtcoeff_dbl_t)d1 << CRTCOEFF_NBITS) + d2) % m; // XXX
+      /* P3, as in int_mod_XXX */
+      if (d1 == 0)
+        r = d2 % (limb_t)m;
+      else
+        r = (((crtcoeff_dbl_t)d1 << CRTCOEFF_NBITS) + d2) % m; // XXX
     }
 
   return a->neg ? m - r : r;
