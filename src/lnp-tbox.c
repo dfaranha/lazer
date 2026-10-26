@@ -2,6 +2,10 @@
 #include "lazer.h"
 #include "stopwatch.h"
 
+static void _p1_polymat_auto (polymat_t r, polymat_t a);
+static void _p1_addmul (polyvec_t r, polymat_t a, polyvec_t b);
+static void _p1_nzcache_begin (polymat_ptr Ps, polymat_ptr Es[], unsigned int Z);
+static void _p1_nzcache_end (void);
 static inline void _expand_R_i (int8_t *Ri, unsigned int ncols, unsigned int i,
                                 const uint8_t cseed[32]);
 static inline void _expand_Rprime_i (int8_t *Rprimei, unsigned int ncols,
@@ -296,6 +300,7 @@ lnp_tbox_prove (uint8_t hash[32], polyvec_t tB, polyvec_t h, poly_t c,
   shake128_squeeze (hstate, expseed, sizeof (expseed));
   shake128_clear (hstate);
 
+  _p1_nzcache_begin (Ps, Es, Z); /* P7 */
   STOPWATCH_START (stopwatch_lnp_tbox_prove_auto, "lnp_tbox_prove_auto");
   /*
    * precompute automorphisms. do this first, since autos are comuted in coeff
@@ -308,7 +313,7 @@ lnp_tbox_prove (uint8_t hash[32], polyvec_t tB, polyvec_t h, poly_t c,
         {
           oEs[i] = _alloc (sizeof (polymat_t));
           polymat_alloc (oEs[i], Rq, n[i], m1);
-          polymat_auto (oEs[i], Es[i]);
+          _p1_polymat_auto (oEs[i], Es[i]);
         }
 
       if (l > 0 && Em[i] != NULL)
@@ -343,7 +348,7 @@ lnp_tbox_prove (uint8_t hash[32], polyvec_t tB, polyvec_t h, poly_t c,
   if (Ps != NULL)
     {
       polymat_alloc (oPs, Rq, nbin, m1);
-      polymat_auto (oPs, Ps);
+      _p1_polymat_auto (oPs, Ps);
     }
   if (l > 0 && Pm != NULL)
     {
@@ -823,6 +828,7 @@ lnp_tbox_prove (uint8_t hash[32], polyvec_t tB, polyvec_t h, poly_t c,
   if (f != NULL)
     polyvec_free (of);
 
+  _p1_nzcache_end (); /* P7 */
   STOPWATCH_STOP (stopwatch_lnp_tbox_prove);
 
   DEBUG_PRINTF (DEBUG_PRINT_FUNCTION_RETURN, "%s", "lnp_tbox_prove end");
@@ -997,13 +1003,14 @@ lnp_tbox_verify (uint8_t hash[32], polyvec_t h, poly_t c, polyvec_t z1,
     }
 
   /* precompute automorphisms */
+  _p1_nzcache_begin (Ps, Es, Z); /* P7 */
   for (i = 0; i < Z; i++)
     {
       if (Es[i] != NULL)
         {
           oEs[i] = _alloc (sizeof (polymat_t));
           polymat_alloc (oEs[i], Rq, n[i], m1);
-          polymat_auto (oEs[i], Es[i]);
+          _p1_polymat_auto (oEs[i], Es[i]);
         }
 
       if (l > 0 && Em[i] != NULL)
@@ -1038,7 +1045,7 @@ lnp_tbox_verify (uint8_t hash[32], polyvec_t h, poly_t c, polyvec_t z1,
   if (Ps != NULL)
     {
       polymat_alloc (oPs, Rq, nbin, m1);
-      polymat_auto (oPs, Ps);
+      _p1_polymat_auto (oPs, Ps);
     }
   if (l > 0 && Pm != NULL)
     {
@@ -1358,6 +1365,7 @@ ret:
   if (f != NULL)
     polyvec_free (of);
 
+  _p1_nzcache_end (); /* P7 */
   STOPWATCH_STOP (stopwatch_lnp_tbox_verify);
   DEBUG_PRINTF (DEBUG_PRINT_FUNCTION_RETURN, "%s end", __func__);
   return b;
@@ -1492,7 +1500,7 @@ _lnp_tbox_compute_z34 (uint8_t hash[32], polyvec_t tB, polyvec_t z3,
             }
           if (Ps != NULL)
             {
-              polyvec_addmul (subv, Ps, s1_, 0);
+              _p1_addmul (subv, Ps, s1_);
               polyvec_fromcrt (subv);
             }
           if (Pm != NULL)
@@ -1521,7 +1529,7 @@ _lnp_tbox_compute_z34 (uint8_t hash[32], polyvec_t tB, polyvec_t z3,
                 }
               if (Es != NULL && Es[i] != NULL)
                 {
-                  polyvec_addmul (subv, Es[i], s1_, 0);
+                  _p1_addmul (subv, Es[i], s1_);
                   polyvec_fromcrt (subv);
                 }
               if (Em != NULL && Em[i] != NULL)
@@ -2607,14 +2615,22 @@ _p1_poly_is_zero (poly_ptr p)
             return 0;
       return 1;
     }
+  /* Only ever applied to the public statement matrices (Ps, Es), so an
+   * early-exit scan of the limbs is fine; int_eqzero is constant-time
+   * (P7). */
   for (i = 0; i < p->ring->d; i++)
-    if (int_eqzero (poly_get_coeff (p, i)) != 1)
-      return 0;
+    {
+      int_srcptr c = poly_get_coeff (p, i);
+
+      for (k = 0; k < c->nlimbs; k++)
+        if (c->limbs[k] != 0)
+          return 0;
+    }
   return 1;
 }
 
 static void
-_p1_nzcols_init (_nzcols_t *nz, polymat_ptr M)
+_p1_nzcols_scan (_nzcols_t *nz, polymat_ptr M)
 {
   const unsigned int nr = polymat_get_nrows (M), nc = polymat_get_ncols (M);
   unsigned int i, j, n = 0;
@@ -2632,11 +2648,154 @@ _p1_nzcols_init (_nzcols_t *nz, polymat_ptr M)
 }
 
 static void
-_p1_nzcols_clear (_nzcols_t *nz, polymat_ptr M)
+_p1_nzcols_free (_nzcols_t *nz, polymat_ptr M)
 {
   _free (nz->rows, sizeof (unsigned int)
                        * (polymat_get_nrows (M) * polymat_get_ncols (M) + 1));
   _free (nz->start, sizeof (unsigned int) * (polymat_get_ncols (M) + 1));
+}
+
+/*
+ * The nonzero patterns of Ps and Es[i], scanned once per lnp_tbox_prove or
+ * lnp_tbox_verify call and shared by everything that needs them (the
+ * automorphisms, z3 and z4, the bin, l2 and z3 equations), which each
+ * rescanned the dense matrices before. The matrices do not change during
+ * the call; the cache is emptied when it returns. Not reentrant, like the
+ * rest of the prover's state (P7).
+ */
+#define _P1_NZCACHE_MAX 64
+static struct
+{
+  polymat_ptr M[_P1_NZCACHE_MAX];
+  _nzcols_t nz[_P1_NZCACHE_MAX];
+  unsigned int n;
+} _p1_nzcache;
+
+static const _nzcols_t *
+_p1_nzcache_get (polymat_ptr M)
+{
+  unsigned int i;
+
+  for (i = 0; i < _p1_nzcache.n; i++)
+    if (_p1_nzcache.M[i] == M)
+      return &_p1_nzcache.nz[i];
+  return NULL;
+}
+
+static void
+_p1_nzcache_add (polymat_ptr M)
+{
+  if (M == NULL || _p1_nzcache.n == _P1_NZCACHE_MAX || _p1_nzcache_get (M))
+    return;
+  _p1_nzcols_scan (&_p1_nzcache.nz[_p1_nzcache.n], M);
+  _p1_nzcache.M[_p1_nzcache.n++] = M;
+}
+
+static void
+_p1_nzcache_begin (polymat_ptr Ps, polymat_ptr Es[], unsigned int Z)
+{
+  unsigned int i;
+
+  _p1_nzcache.n = 0;
+  _p1_nzcache_add (Ps);
+  for (i = 0; Es != NULL && i < Z; i++)
+    _p1_nzcache_add (Es[i]);
+}
+
+static void
+_p1_nzcache_end (void)
+{
+  unsigned int i;
+
+  for (i = 0; i < _p1_nzcache.n; i++)
+    _p1_nzcols_free (&_p1_nzcache.nz[i], _p1_nzcache.M[i]);
+  _p1_nzcache.n = 0;
+}
+
+/* The nonzero pattern of M: the cached one if M is Ps or an Es[i] of the
+ * current call, else a fresh scan. */
+static void
+_p1_nzcols_init (_nzcols_t *nz, polymat_ptr M)
+{
+  const _nzcols_t *c = _p1_nzcache_get (M);
+
+  if (c != NULL)
+    *nz = *c;
+  else
+    _p1_nzcols_scan (nz, M);
+}
+
+static void
+_p1_nzcols_clear (_nzcols_t *nz, polymat_ptr M)
+{
+  if (_p1_nzcache_get (M) == NULL)
+    _p1_nzcols_free (nz, M);
+}
+
+/* r = o(a) entrywise for a public matrix a (Ps, Es) that is mostly zero:
+ * the automorphism of a zero entry is zero, so r is cleared and only a's
+ * nonzero entries are mapped. Leaves r in the coefficient domain, as
+ * polymat_auto does (P7). */
+static void
+_p1_polymat_auto (polymat_t r, polymat_t a)
+{
+  _nzcols_t nz;
+  unsigned int k, x;
+
+  _p1_nzcols_init (&nz, a);
+  polymat_set_zero (r);
+  for (k = 0; k < polymat_get_ncols (a); k++)
+    for (x = nz.start[k]; x < nz.start[k + 1]; x++)
+      poly_auto (polymat_get_elem (r, nz.rows[x], k),
+                 polymat_get_elem (a, nz.rows[x], k));
+  _p1_nzcols_clear (&nz, a);
+}
+
+/* r += a b for a public matrix a (Ps, Es) that is mostly zero, as
+ * polyvec_addmul (r, a, b, 0) computes it: each row's dot product in the CRT
+ * domain, then added to r. Zero entries add nothing to the dot products, so
+ * only a's nonzero entries are multiplied (and only they, and the entries of
+ * b they meet, are converted to the CRT domain) (P7). */
+static void
+_p1_addmul (polyvec_t r, polymat_t a, polyvec_t b)
+{
+  polyring_srcptr ring = polyvec_get_ring (r);
+  const unsigned int nr = polymat_get_nrows (a);
+  _nzcols_t nz;
+  unsigned int i, k, x;
+  polyvec_t dot;
+  poly_t prod;
+
+  ASSERT_ERR (polyvec_get_nelems (r) == nr);
+  ASSERT_ERR (polyvec_get_nelems (b) == polymat_get_ncols (a));
+
+  _p1_nzcols_init (&nz, a);
+  polyvec_alloc (dot, ring, nr);
+  poly_alloc (prod, ring);
+  for (i = 0; i < nr; i++)
+    {
+      poly_ptr di = polyvec_get_elem (dot, i);
+
+      if (di->crtrep == NULL)
+        di->crtrep = _alloc (_sizeof_crtrep_data (ring));
+      di->crt = 1;
+      memset (di->crtrep, 0, _sizeof_crtrep_data (ring));
+    }
+  for (k = 0; k < polymat_get_ncols (a); k++)
+    for (x = nz.start[k]; x < nz.start[k + 1]; x++)
+      {
+        poly_ptr di = polyvec_get_elem (dot, nz.rows[x]);
+
+        poly_mul (prod, polymat_get_elem (a, nz.rows[x], k),
+                  polyvec_get_elem (b, k));
+        poly_add (di, di, prod, 1);
+      }
+  for (i = 0; i < nr; i++)
+    poly_add (polyvec_get_elem (r, i), polyvec_get_elem (r, i),
+              polyvec_get_elem (dot, i), 0);
+  poly_free (prod);
+  polyvec_free (dot);
+  _p1_nzcols_clear (&nz, a);
 }
 
 /* Whether columns k of A and j of B share a nonzero row. */
