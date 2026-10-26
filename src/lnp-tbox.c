@@ -1800,8 +1800,18 @@ _lnp_tbox_compute_z34 (uint8_t hash[32], polyvec_t tB, polyvec_t z3,
   memcpy (hash, cseed, 32);
 
   /* output proof (h,c,z1,z21,hint,z3,z4) */
-  polyvec_set (z3, z3_);
-  polyvec_set (z4, z4_);
+  /* F7: z4 is only computed with the approximate infinity-norm proof
+   * (nprime > 0), and z3 only with exact norms (nex > 0). Otherwise
+   * z4coeffs (z3coeffs) are uninitialised stack, which was copied into the
+   * proof: output zero instead. */
+  if (nex > 0)
+    polyvec_set (z3, z3_);
+  else
+    polyvec_set_zero (z3);
+  if (nprime > 0)
+    polyvec_set (z4, z4_);
+  else
+    polyvec_set_zero (z4);
 
   /* cleanup */
   rng_clear (rstate_signs);
