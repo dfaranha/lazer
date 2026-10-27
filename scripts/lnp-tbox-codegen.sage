@@ -61,7 +61,7 @@ def Bound():
 
 # constants, dont change
 KAPPA = 128    # security param, bit security
-DELTA128 = 1.0044  # root hermite factor for 128-bit security
+DELTA128 = globals().get("DELTA_TARGET", 1.0044)  # root hermite factor for 128-bit security; a parameter file may set DELTA_TARGET
 # number of irreducible factors of X^d + 1 modulo each q_i,  q_i = 2l+1 (mod 4l)
 L = 2
 T = 1.64  # for KAPPA=128
