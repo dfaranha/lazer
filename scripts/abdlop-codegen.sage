@@ -348,7 +348,7 @@ out += f"""
 {int_t(f"{name}_scM2", int(mp.nint(mpf(2^128) * M2)))}
 {int_t(f"{name}_stdev1sq", int(mp.nint(stdev1^2)), 2*q_nlimbs)}
 {int_t(f"{name}_stdev2sq", int(mp.nint(stdev2^2)), 2*q_nlimbs)}
-{int_t(f"{name}_inv2", redc(1/2 % q, q))}
+{int_t(f"{name}_inv2", redc(1/2 % q, q), q_nlimbs)}
 {int_t(f"{name}_Pmodq", Pmodq, q_nlimbs)}
 """
 for i in range(len(moduli)):

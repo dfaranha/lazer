@@ -273,7 +273,7 @@ else:
 
 out += f"""
 {int_t(f"{vname}_p", mod)}
-{int_t(f"{vname}_pinv", redc(1/mod % q, q))}
+{int_t(f"{vname}_pinv", redc(1/mod % q, q), int2limbs(q)[1])}
 static const unsigned int {vname}_s1_indices[{len(s1_indices)}] = {intlist2intarray(s1_indices)};
 static const lin_params_t {vname} = {{{{ {name}, {deg}, {vname}_p, {vname}_pinv, {k}, {vname}_s1_indices, {len(s1_indices)}, {vname_m_indices}, {len(m_indices)},  {vname_Ps}, {matPs_nrows}, {strEs}, {strEs_nrows}, {strEm}, {strEm_nrows} }}}};
 """

@@ -491,8 +491,8 @@ out += f"""
 {int_t(f"{name}_stdev2sq", int(mp.nint(stdev2^2)), 2*q_nlimbs)}
 {int_t(f"{name}_stdev3sq", int(mp.nint(stdev3^2)), 2*q_nlimbs)}
 {int_t(f"{name}_stdev4sq", int(mp.nint(stdev4^2)), 2*q_nlimbs)}
-{int_t(f"{name}_inv2", redc(1/2 % q, q))}
-{int_t(f"{name}_inv4", redc(1/4 % q, q))}
+{int_t(f"{name}_inv2", redc(1/2 % q, q), q_nlimbs)}
+{int_t(f"{name}_inv4", redc(1/4 % q, q), q_nlimbs)}
 static const unsigned int {name}_n[{Z}] = {intlist2intarray(n)};
 {int_t(f"{name}_Bz3sqr", Bz3sqr, 2*q_nlimbs)}
 {int_t(f"{name}_Bz4", Bz4, q_nlimbs)}
